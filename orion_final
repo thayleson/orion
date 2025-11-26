@@ -1,0 +1,92 @@
+import cv2
+import numpy as np
+import pyttsx3
+from picamera2 import Picamera2
+import time
+
+MODEL_PATH = "/home/pi/yolov8n.onnx"
+CLASSES_FILE = "/home/pi/coco_ptbr.txt"
+CONF_THRESHOLD = 0.3
+INPUT_SIZE = 320
+
+# Áudio (pyttsx3 com voz brasileira)
+engine = pyttsx3.init()
+engine.setProperty('rate', 150)
+try:
+    engine.setProperty('voice', 'brazil')
+except:
+    pass
+
+# Carrega classes
+with open(CLASSES_FILE, 'r', encoding='utf-8') as f:
+    classes = [line.strip().lower() for line in f.readlines()]
+
+# Carrega modelo YOLOv8-ONNX
+net = cv2.dnn.readNetFromONNX(MODEL_PATH)
+
+# Inicia câmera
+picam2 = Picamera2()
+picam2.configure(picam2.create_video_configuration(main={"size": (320, 240)}))
+picam2.start()
+
+print("ORION Ativado")
+engine.say("Orion ligado")
+engine.runAndWait()
+
+ultimo_aviso = 0
+
+while True:
+    frame = picam2.capture_array()
+    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    h, w = frame_bgr.shape[:2]
+
+    # YOLOv8-ONNX inference
+    blob = cv2.dnn.blobFromImage(frame_bgr, 1/255.0, (INPUT_SIZE, INPUT_SIZE), swapRB=True, crop=False)
+    net.setInput(blob)
+    outputs = net.forward()
+    detections = outputs[0].transpose(1, 0)  # (8400, 84)
+
+    objetos_posicao = {}
+
+    for det in detections:
+        scores = det[4:]
+        class_id = np.argmax(scores)
+        conf = scores[class_id]
+        if conf > CONF_THRESHOLD:
+            label = classes[class_id]
+            cx = det[0]  # centro X normalizado
+
+            if cx < 0.40:
+                pos = "esquerda"
+            elif cx > 0.60:
+                pos = "direita"
+            else:
+                pos = "centro"
+
+            if label not in objetos_posicao:
+                objetos_posicao[label] = set()
+            objetos_posicao[label].add(pos)
+
+    # Fala só quando muda ou a cada 8 segundos
+    if objetos_posicao or time.time() - ultimo_aviso > 8:
+        frases = []
+        for label, posicoes in objetos_posicao.items():
+            if len(posicoes) == 1:
+                frases.append(f"{label} na {list(posicoes)[0]}")
+            else:
+                frases.append(f"{label} em várias posições")
+
+        if frases:
+            texto = "Atenção: " + ", ".join(frases[:4])
+            if len(frases) > 4:
+                texto += " e outros"
+            print(f"ORION → {texto}")
+            engine.say(texto)
+            engine.runAndWait()
+
+        ultimo_aviso = time.time()
+
+    time.sleep(0.5)
+
+picam2.stop()
+print("ORION desligado.")
